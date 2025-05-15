@@ -131,6 +131,8 @@ void *msm_cvp_open(int core_id, int session_type)
 	int rc = 0;
 	int i = 0;
 
+	pr_info(CVP_DBG_TAG "Opening cvp start\n","sess");
+
 	if (core_id >= MSM_CVP_CORES_MAX ||
 			session_type >= MSM_CVP_MAX_DEVICES) {
 		dprintk(CVP_ERR, "Invalid input, core_id = %d, session = %d\n",
@@ -220,6 +222,8 @@ void *msm_cvp_open(int core_id, int session_type)
 
 	inst->debugfs_root =
 		msm_cvp_debugfs_init_inst(inst, core->debugfs_root);
+
+	pr_info(CVP_DBG_TAG "Opening cvp end\n","sess");
 
 	return inst;
 fail_init:
@@ -346,6 +350,8 @@ int msm_cvp_destroy(struct msm_cvp_inst *inst)
 {
 	struct msm_cvp_core *core;
 
+	pr_info(CVP_DBG_TAG "Closed cvp start\n","sess");
+
 	if (!inst || !inst->core) {
 		dprintk(CVP_ERR, "%s: invalid params\n", __func__);
 		return -EINVAL;
@@ -379,6 +385,9 @@ int msm_cvp_destroy(struct msm_cvp_inst *inst)
 		"sess", inst, hash32_ptr(inst->session));
 	inst->session = (void *)0xdeadbeef;
 	kfree(inst);
+
+	pr_info(CVP_DBG_TAG "Closed cvp end\n","sess");
+
 	return 0;
 }
 

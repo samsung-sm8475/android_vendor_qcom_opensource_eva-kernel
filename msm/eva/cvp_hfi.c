@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023-2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <asm/memory.h>
@@ -479,7 +479,7 @@ static int __read_queue(struct cvp_iface_q_info *qinfo, u8 *packet,
 	u32 *read_ptr;
 	u32 receive_request = 0;
 	u32 read_idx, write_idx;
-		int rc = 0;
+	int rc = 0;
 
 	if (!qinfo || !packet || !pb_tx_req_is_set) {
 		dprintk(CVP_ERR, "Invalid Params\n");
@@ -569,6 +569,12 @@ static int __read_queue(struct cvp_iface_q_info *qinfo, u8 *packet,
 					(u8 *)qinfo->q_array.align_virtual_addr,
 					new_read_idx << 2);
 		}
+		/*
+		 * Copy back the validated size to avoid security issue. As we are reading
+		 * the packet from a shared queue, there is a possibility to get the
+		 * packet->size data corrupted of shared queue by mallicious FW.
+		 */
+		*((u32 *) packet) = packet_size_in_words << 2;
 	} else {
 		dprintk(CVP_WARN,
 			"BAD packet received, read_idx: %#x, pkt_size: %d\n",
@@ -1778,8 +1784,6 @@ static void cvp_pm_qos_update(struct iris_hfi_device *device, bool vote_on)
 
 	if (device->res->pm_qos.latency_us && device->res->pm_qos.pm_qos_hdls)
 		for (i = 0; i < device->res->pm_qos.silver_count; i++) {
-			if (!cpu_possible(device->res->pm_qos.silver_cores[i]))
-				continue;
 			err = dev_pm_qos_update_request(
 				&device->res->pm_qos.pm_qos_hdls[i],
 				latency);
@@ -1933,8 +1937,6 @@ static int iris_hfi_core_init(void *device)
 
 		for (i = 0; i < dev->res->pm_qos.silver_count; i++) {
 			cpu = dev->res->pm_qos.silver_cores[i];
-			if (!cpu_possible(cpu))
-				continue;
 			err = dev_pm_qos_add_request(
 				get_cpu_device(cpu),
 				&dev->res->pm_qos.pm_qos_hdls[i],
@@ -1989,8 +1991,6 @@ static int iris_hfi_core_release(void *dev)
 	if (device->res->pm_qos.latency_us &&
 		device->res->pm_qos.pm_qos_hdls) {
 		for (i = 0; i < device->res->pm_qos.silver_count; i++) {
-			if (!cpu_possible(device->res->pm_qos.silver_cores[i]))
-				continue;
 			qos_hdl = &device->res->pm_qos.pm_qos_hdls[i];
 			if ((qos_hdl != NULL) && dev_pm_qos_request_active(qos_hdl))
 				dev_pm_qos_remove_request(qos_hdl);
@@ -2645,17 +2645,19 @@ skip_power_off:
 static void __process_sys_error(struct iris_hfi_device *device)
 {
 	struct cvp_hfi_sfr_struct *vsfr = NULL;
+	u32 sfr_buf_size = 0;
 
 	vsfr = (struct cvp_hfi_sfr_struct *)device->sfr.align_virtual_addr;
-	if (vsfr) {
-		void *p = memchr(vsfr->rg_data, '\0', vsfr->bufSize);
+	sfr_buf_size = vsfr->bufSize;
+	if (vsfr && sfr_buf_size < ALIGNED_SFR_SIZE) {
+		void *p = memchr(vsfr->rg_data, '\0', sfr_buf_size);
 		/*
 		 * SFR isn't guaranteed to be NULL terminated
 		 * since SYS_ERROR indicates that Iris is in the
 		 * process of crashing.
 		 */
 		if (p == NULL)
-			vsfr->rg_data[vsfr->bufSize - 1] = '\0';
+			vsfr->rg_data[sfr_buf_size - 1] = '\0';
 
 		dprintk(CVP_ERR, "SFR Message from FW: %s\n",
 				vsfr->rg_data);
@@ -2853,7 +2855,7 @@ static int __response_handler(struct iris_hfi_device *device)
 	int packet_count = 0;
 	u8 *raw_packet = NULL;
 	bool requeue_pm_work = true;
-	//u32 reg_val = 0;
+
 	if (!device || device->state != IRIS_STATE_INIT)
 		return 0;
 
@@ -2868,14 +2870,7 @@ static int __response_handler(struct iris_hfi_device *device)
 		return 0;
 	}
 
-	//reg_val = __read_register(device, CVP_CPU_CS_SCIACMD);
-	//dprintk(CVP_INFO, "reg: %x, reg value %x\n",
-	//	CVP_CPU_CS_SCIACMD, reg_val);
-	//reg_val = __read_register(device, CVP_CPU_CS_SCIACMDARG0);
-	//dprintk(CVP_INFO, "reg: %x, reg value %x\n",
-	//	CVP_CPU_CS_SCIACMDARG0, reg_val);
-	//
-	if (device->intr_status & CVP_WRAPPER_INTR_MASK_A2HWD_BMSK) {
+	if (device->intr_status & CVP_FATAL_INTR_BMSK) {
 		struct cvp_hfi_sfr_struct *vsfr = (struct cvp_hfi_sfr_struct *)
 			device->sfr.align_virtual_addr;
 		struct msm_cvp_cb_info info = {
@@ -4558,7 +4553,7 @@ static void __noc_error_info_iris2(struct iris_hfi_device *device)
 	__err_log(log_required, &noc_log->err_core_errlog2_high,
 			"CVP_NOC_CORE_ERL_MAIN_ERRLOG2_HIGH", val);
 	val = __read_register(device, CVP_NOC_CORE_ERR_ERRLOG3_LOW_OFFS);
-	__err_log(log_required, &noc_log->err_core_errlog3_low, 
+	__err_log(log_required, &noc_log->err_core_errlog3_low,
 			"CORE ERRLOG3_LOW, below details", val);
 	__print_reg_details(val);
 	val = __read_register(device, CVP_NOC_CORE_ERR_ERRLOG3_HIGH_OFFS);
